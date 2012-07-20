@@ -81,8 +81,7 @@ scan_string(String,Basename,Options) ->
 generate_source(ProtoFile) when is_atom(ProtoFile) ->
     generate_source(atom_to_list(ProtoFile),[]);
 generate_source(ProtoFile) ->
-    Basename = filename:basename(ProtoFile, ".proto"),
-    generate_source(Basename,[]).
+    generate_source(ProtoFile,[]).
 
 %%--------------------------------------------------------------------
 %% @doc Generats a source .erl file and header file .hrl
@@ -93,14 +92,17 @@ generate_source(ProtoFile) ->
 -spec generate_source(ProtoFile :: string(), Options :: list()) ->
 			     ok | {error, _}.
 generate_source(ProtoFile,Options) when is_list (ProtoFile) ->
-    Basename = ProtoFile ++ "_pb",
+    Basename = filename:basename(ProtoFile, ".proto"),
+    PbName = Basename ++ "_pb",
+    io:format("~p~n", [ProtoFile]),
     {ok,String} = parse_file(ProtoFile),
     {ok,FirstParsed} = parse_string(String),
     ImportPaths = ["./", "src/" | proplists:get_value(imports_dir, Options, [])],
     Parsed = parse_imports(FirstParsed, ImportPaths),
+    io:format("~p~n", [Parsed]),
     Collected = collect_full_messages(Parsed), 
     Messages = resolve_types(Collected#collected.msg,Collected#collected.enum),
-    output_source (Basename, Messages, Collected#collected.enum, Options).
+    output_source (PbName, Messages, Collected#collected.enum, Options).
 
 %% @hidden
 parse_imports(Parsed, Path) ->
