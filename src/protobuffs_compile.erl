@@ -94,12 +94,10 @@ generate_source(ProtoFile) ->
 generate_source(ProtoFile,Options) when is_list (ProtoFile) ->
     Basename = filename:basename(ProtoFile, ".proto"),
     PbName = Basename ++ "_pb",
-    io:format("~p~n", [ProtoFile]),
     {ok,String} = parse_file(ProtoFile),
     {ok,FirstParsed} = parse_string(String),
     ImportPaths = ["./", "src/" | proplists:get_value(imports_dir, Options, [])],
     Parsed = parse_imports(FirstParsed, ImportPaths),
-    io:format("~p~n", [Parsed]),
     Collected = collect_full_messages(Parsed), 
     Messages = resolve_types(Collected#collected.msg,Collected#collected.enum),
     output_source (PbName, Messages, Collected#collected.enum, Options).
@@ -117,7 +115,8 @@ parse_imports([{import, File} = Head | Tail], Path, Acc) ->
 	    file:close(F),
 	    {ok,String} = parse_file(Fullname),
 	    {ok,FirstParsed} = parse_string(String),
-	    Parsed = lists:append(FirstParsed, Tail),
+	    ParsedWithGuard = lists:append(FirstParsed, [end_import]),
+	    Parsed = lists:append(ParsedWithGuard, Tail),
 	    parse_imports(Parsed, Path, [Head | Acc]);
 	{error, Error} ->
 	    error_logger:error_report([
@@ -555,11 +554,12 @@ filter_int_to_enum_clause({enum,EnumTypeName,IntValue,EnumValue}, {clause,L,_Arg
 %%    {3,required,"string","phone_number",none},
 %%    {2,required,"string","address",none},
 %%    {1,required,"string","name",none}]}]
-collect_full_messages(Data) -> collect_full_messages(Data, #collected{}).
-collect_full_messages([{message, Name, Fields} | Tail], Collected) ->
-    ListName = case erlang:is_list (hd(Name)) of
-		   true -> Name;
-		   false -> [Name]
+collect_full_messages(Data) -> collect_full_messages(Data, #collected{}, "").
+collect_full_messages([{message, Name, Fields} | Tail], Collected, PackagePrefix) ->
+    {PlainListName, ListName} = case erlang:is_list (hd(Name)) of
+		   true ->Reversed = lists:reverse(Name),
+                          {Reversed, Reversed ++ PackagePrefix};
+		   false -> {[Name], [Name | PackagePrefix]}
 	       end,
     
     FieldsOut = lists:foldl(
@@ -568,7 +568,8 @@ collect_full_messages([{message, Name, Fields} | Tail], Collected) ->
 		  end, [], Fields),
     
     Enums = lists:foldl(
-	      fun ({enum,C,D}, TmpAcc) -> [{enum, [C | ListName], D} | TmpAcc];
+	      fun ({enum,C,D}, TmpAcc) -> 
+                          [{enum, lists:reverse([C | PlainListName]), D} | TmpAcc];
 		  (_, TmpAcc) -> TmpAcc
 	      end, [], Fields),
     
@@ -578,7 +579,8 @@ collect_full_messages([{message, Name, Fields} | Tail], Collected) ->
 		   end, [], Fields),
 			   
     SubMessages = lists:foldl(
-		    fun ({message, C, D}, TmpAcc) -> [{message, [C | ListName], D} | TmpAcc];
+		    fun ({message, C, D}, TmpAcc) ->
+                          [{message, lists:reverse([C | PlainListName]), D} | TmpAcc];
 			(_, TmpAcc) -> TmpAcc
 		    end, [], Fields),
 
@@ -591,11 +593,11 @@ collect_full_messages([{message, Name, Fields} | Tail], Collected) ->
 		     msg=[{ListName, FieldsOut, ExtendedFields} | Collected#collected.msg],
 		     extensions=[{ListName,Extensions} | Collected#collected.extensions]
 		    },
-    collect_full_messages(Tail ++ SubMessages ++ Enums, NewCollected);
-collect_full_messages([{enum, Name, Fields} | Tail], Collected) ->
+    collect_full_messages(Tail ++ SubMessages ++ Enums, NewCollected, PackagePrefix);
+collect_full_messages([{enum, Name, Fields} | Tail], Collected, PackagePrefix) ->
     ListName = case erlang:is_list (hd(Name)) of
-		   true -> Name;
-		   false -> [Name]
+		   true -> lists:reverse(Name) ++ PackagePrefix;
+		   false -> [Name | PackagePrefix]
 	       end,
 
     FieldsOut = lists:foldl(
@@ -610,14 +612,18 @@ collect_full_messages([{enum, Name, Fields} | Tail], Collected) ->
 		  end, [], Fields),
     
     NewCollected = Collected#collected{enum=FieldsOut++Collected#collected.enum},
-    collect_full_messages(Tail, NewCollected);
-collect_full_messages([{package, _PackageName} | Tail], Collected) ->
-    collect_full_messages(Tail, Collected);
-collect_full_messages([{option,_,_} | Tail], Collected) ->
-    collect_full_messages(Tail, Collected);
-collect_full_messages([{import, _Filename} | Tail], Collected) ->
-    collect_full_messages(Tail, Collected);
-collect_full_messages([{extend, Name, ExtendedFields} | Tail], Collected) ->
+    collect_full_messages(Tail, NewCollected, PackagePrefix);
+collect_full_messages([{package, PackageName} | Tail], Collected, _PackagePrefix) ->
+    Tokens = lists:reverse(string:tokens(PackageName, ".")),
+    collect_full_messages(Tail, Collected, Tokens);
+collect_full_messages([{option,_,_} | Tail], Collected, PackagePrefix) ->
+    collect_full_messages(Tail, Collected, PackagePrefix);
+% Clear package prefix when entering a new file
+collect_full_messages([{import, _Filename} | Tail], Collected, _PackagePrefix) ->
+    collect_full_messages(Tail, Collected, "");
+collect_full_messages([end_import | Tail], Collected, _PackagePrefix) ->
+    collect_full_messages(Tail, Collected, "");
+collect_full_messages([{extend, Name, ExtendedFields} | Tail], Collected, PackagePrefix) ->
     ListName = case erlang:is_list (hd(Name)) of
 		   true -> Name;
 		   false -> [Name]
@@ -658,13 +664,13 @@ collect_full_messages([{extend, Name, ExtendedFields} | Tail], Collected) ->
         _ -> ExtendFields ++ ExtendedFieldsOut
     end,
     NewCollected = Collected#collected{msg=lists:keyreplace(ListName,1,CollectedMsg,{ListName,FieldsOut,NewExtends})},
-    collect_full_messages(Tail, NewCollected);
+    collect_full_messages(Tail, NewCollected, PackagePrefix);
 %% Skip anything we don't understand
-collect_full_messages([Skip|Tail], Acc) ->
+collect_full_messages([Skip|Tail], Acc, PackagePrefix) ->
     error_logger:warning_report(["Unkown, skipping",
 				 {skip,Skip}]), 
-    collect_full_messages(Tail, Acc);
-collect_full_messages([], Collected) ->
+    collect_full_messages(Tail, Acc, PackagePrefix);
+collect_full_messages([], Collected, _PackagePrefix) ->
     Collected.
 
 %% @hidden
@@ -683,7 +689,7 @@ resolve_types ([{TypePath, Fields,Extended} | Tail], AllPaths, Enums, Acc) ->
 						  FullPath ->
 						% handle types of the form Foo.Bar which are absolute,
 						% so we just convert to a type path and check it.
-						      [lists:reverse (FullPath)]
+						      [lists:reverse(FullPath)]
 					      end,
 					  RealPath =
 					      case find_type (PossiblePaths, AllPaths) of
@@ -692,7 +698,7 @@ resolve_types ([{TypePath, Fields,Extended} | Tail], AllPaths, Enums, Acc) ->
 							  {true,EnumType} ->
 							      EnumType;
 							  false ->
-							      throw (["Unknown Type ", Type])
+							      throw (["Unknown Type", Type])
 						      end;
 						  ResultType ->
 						      ResultType
@@ -834,5 +840,5 @@ find_type ([Type | TailTypes], KnownTypes) ->
 
 %% @hidden
 type_path_to_type (TypePath) ->
-    string:join (lists:reverse (TypePath), "_").
+    string:join (lists:reverse (TypePath), "@").
 
