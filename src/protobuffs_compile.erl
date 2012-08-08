@@ -725,9 +725,10 @@ write_header_include_file(Basename, Messages) ->
     {ok, FileRef} = protobuffs_file:open(Basename, [write]),
     [begin
          OutFields = [{string:to_lower(A), Optional, Default} || {_, Optional, _, A, Default} <- lists:keysort(1, Fields)],
-         DefName = string:to_upper(Name) ++ "_PB_H",
+         [Dot] = ".",
+         DefName = [A || A <- string:to_upper(Name), A /= Dot] ++ "_PB_H",
          protobuffs_file:format(FileRef, "-ifndef(~s).~n-define(~s, true).~n", [DefName, DefName]),
-         protobuffs_file:format(FileRef, "-record(~s, {~n    ", [string:to_lower(Name)]),
+         protobuffs_file:format(FileRef, "-record('~s', {~n    ", [string:to_lower(Name)]),
          WriteFields0 = generate_field_definitions(OutFields),
          WriteFields = case Extends of
                            disallowed -> WriteFields0;
@@ -840,5 +841,5 @@ find_type ([Type | TailTypes], KnownTypes) ->
 
 %% @hidden
 type_path_to_type (TypePath) ->
-    string:join (lists:reverse (TypePath), "@").
+    string:join (lists:reverse (TypePath), ".").
 
